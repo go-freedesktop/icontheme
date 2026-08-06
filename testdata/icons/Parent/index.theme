@@ -1,0 +1,8 @@
+[Icon Theme]
+Name=Parent
+Inherits=hicolor
+Directories=16x16/apps
+
+[16x16/apps]
+Size=16
+Type=Fixed
