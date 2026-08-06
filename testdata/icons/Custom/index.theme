@@ -1,0 +1,26 @@
+# Custom test theme
+[Icon Theme]
+Name=Custom
+Comment=Synthetic theme for tests
+Inherits=Parent
+Directories=16x16/apps,32x32/apps,32x32@2x/apps,scalable/apps
+
+[16x16/apps]
+Size=16
+Type=Fixed
+Context=Applications
+
+[32x32/apps]
+Size=32
+Type=Threshold
+
+[32x32@2x/apps]
+Size=32
+Scale=2
+Type=Fixed
+
+[scalable/apps]
+Size=48
+MinSize=8
+MaxSize=512
+Type=Scalable
