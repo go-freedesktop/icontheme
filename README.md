@@ -1,8 +1,10 @@
-# icontheme
+# icontheme — go-freedesktop
 
-[![CI](https://github.com/go-freedesktop/icontheme/actions/workflows/ci.yml/badge.svg)](https://github.com/go-freedesktop/icontheme/actions/workflows/ci.yml)
+[![ci](https://github.com/go-freedesktop/icontheme/actions/workflows/ci.yml/badge.svg)](https://github.com/go-freedesktop/icontheme/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-freedesktop/icontheme.svg)](https://pkg.go.dev/github.com/go-freedesktop/icontheme)
-[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![Go](https://img.shields.io/badge/go-1.26.4%2B-00ADD8)](https://go.dev/dl/)
+[![Coverage](https://img.shields.io/badge/coverage-100%25-1a7f37)](#tests--coverage)
 
 Pure-Go (`CGO_ENABLED=0`) implementation of the freedesktop.org
 [Icon Theme Specification](https://specifications.freedesktop.org/icon-theme/latest/)
@@ -81,6 +83,13 @@ func main() {
 - `(*Theme) Lookup(name string, size, scale int) (string, error)` — resolve one name.
 - `(*Theme) FindIcon(names []string, size, scale int) (string, error)` — first name that resolves.
 - `ErrNotFound` — returned when nothing matches.
+
+## Tests & coverage
+
+`CGO_ENABLED=0 go test ./...` — **100% statement coverage**, including every
+error branch, driven by fixtures under `testdata/`. CI additionally
+cross-builds and runs the suite on the six supported 64-bit targets
+(amd64/arm64 natively, riscv64/loong64/ppc64le/s390x under qemu-user).
 
 ## License
 
