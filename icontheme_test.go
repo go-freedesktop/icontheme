@@ -94,6 +94,18 @@ func TestLookupUnthemedPixmapFallback(t *testing.T) {
 	wantPath(t, got, err, "testdata/pixmaps/legacy.png")
 }
 
+func TestLookupUnthemedPixmapSkipsEmptyBase(t *testing.T) {
+	// A leading base directory that does not exist yields an empty listing, so
+	// the unthemed-pixmap scan skips it and still finds the file in a later
+	// base directory.
+	th := NewWithBaseDirs("Custom", []string{
+		filepath.Join("testdata", "does-not-exist"),
+		filepath.Join("testdata", "pixmaps"),
+	})
+	got, err := th.Lookup("legacy", 16, 1)
+	wantPath(t, got, err, "testdata/pixmaps/legacy.png")
+}
+
 func TestLookupGenericThemedFallback(t *testing.T) {
 	// Truncating "text-editor-x" yields "text-editor", found in the theme.
 	th := newCustom()

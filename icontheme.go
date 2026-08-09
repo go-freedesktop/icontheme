@@ -74,9 +74,11 @@ type Theme struct {
 	name     string
 	baseDirs []string
 
-	mu      sync.Mutex
-	indexes map[string]*index // theme name -> parsed index; nil value = absent
-	cache   map[lookupKey]string
+	mu         sync.Mutex
+	indexes    map[string]*index          // theme name -> parsed index; nil value = absent
+	cache      map[lookupKey]string       // memoised lookup results
+	dirSets    map[dirKey]map[string]bool // directory -> set of entry names (one ReadDir each)
+	chainCache []string                   // memoised, resolved theme search order
 }
 
 // lookupKey identifies a memoised lookup result.
@@ -84,6 +86,12 @@ type lookupKey struct {
 	name  string
 	size  int
 	scale int
+}
+
+// dirKey identifies an icon directory without materialising its joined path on
+// every probe: the path string is built only when the directory is first read.
+type dirKey struct {
+	base, theme, subdir string
 }
 
 // New returns a Theme for the named icon theme using the standard base
@@ -102,6 +110,7 @@ func NewWithBaseDirs(name string, baseDirs []string) *Theme {
 		baseDirs: baseDirs,
 		indexes:  make(map[string]*index),
 		cache:    make(map[lookupKey]string),
+		dirSets:  make(map[dirKey]map[string]bool),
 	}
 }
 
@@ -176,13 +185,37 @@ func (t *Theme) resolve(name string, size, scale int) string {
 // findIconInChain walks the theme's inheritance chain (deduplicated and
 // cycle-safe), then hicolor, applying LookupIcon at each theme.
 func (t *Theme) findIconInChain(name string, size, scale int) string {
-	visited := make(map[string]bool)
-	for _, themeName := range t.chain(visited) {
-		if path := t.lookupIcon(name, size, scale, themeName); path != "" {
+	files := iconCandidates(name)
+	for _, themeName := range t.themeChain() {
+		if path := t.lookupIcon(files, size, scale, themeName); path != "" {
 			return path
 		}
 	}
 	return ""
+}
+
+// iconCandidates returns the candidate file names for an icon, one per known
+// extension in preference order (name.png, name.svg, name.xpm). Building them
+// once per icon name — rather than once per probed directory — keeps the
+// directory scans of a miss allocation-light.
+func iconCandidates(name string) []string {
+	c := make([]string, len(extensions))
+	for i, ext := range extensions {
+		c[i] = name + "." + ext
+	}
+	return c
+}
+
+// themeChain returns the resolved, deduplicated theme search order, computing
+// it once per Theme. The order depends only on the (cached) index inheritance
+// graph, not on the icon being looked up, so it is memoised to spare every
+// uncached lookup — and every generic-fallback iteration — the map and slice
+// churn of re-walking the graph. The caller holds the lock.
+func (t *Theme) themeChain() []string {
+	if t.chainCache == nil {
+		t.chainCache = t.chain(make(map[string]bool))
+	}
+	return t.chainCache
 }
 
 // chain returns the ordered, deduplicated list of theme names to search: the
@@ -214,7 +247,7 @@ func (t *Theme) walk(themeName string, visited map[string]bool, order *[]string)
 
 // lookupIcon implements the specification's LookupIcon for a single theme: an
 // exact size-match pass, then a closest-by-distance pass.
-func (t *Theme) lookupIcon(name string, size, scale int, themeName string) string {
+func (t *Theme) lookupIcon(files []string, size, scale int, themeName string) string {
 	idx := t.loadIndex(themeName)
 	if idx == nil {
 		return ""
@@ -224,7 +257,7 @@ func (t *Theme) lookupIcon(name string, size, scale int, themeName string) strin
 		if !directoryMatchesSize(dir, size, scale) {
 			continue
 		}
-		if path := t.probe(themeName, dir.name, name); path != "" {
+		if path := t.probe(themeName, dir.name, files); path != "" {
 			return path
 		}
 	}
@@ -232,7 +265,7 @@ func (t *Theme) lookupIcon(name string, size, scale int, themeName string) strin
 	minDistance := -1
 	closest := ""
 	for _, dir := range idx.dirs {
-		path := t.probe(themeName, dir.name, name)
+		path := t.probe(themeName, dir.name, files)
 		if path == "" {
 			continue
 		}
@@ -246,11 +279,22 @@ func (t *Theme) lookupIcon(name string, size, scale int, themeName string) strin
 }
 
 // probe returns the first existing file for name in a theme subdirectory,
-// trying each known extension, or "" if none exists.
-func (t *Theme) probe(themeName, subdir, name string) string {
+// trying each known extension, or "" if none exists. It consults a cached
+// directory listing so that names absent from a directory cost no syscall; a
+// listed candidate is still confirmed with fileExists, preserving the exact
+// semantics (symlink following, directory rejection) of a direct stat.
+func (t *Theme) probe(themeName, subdir string, files []string) string {
 	for _, base := range t.baseDirs {
-		for _, ext := range extensions {
-			path := filepath.Join(base, themeName, subdir, name+"."+ext)
+		key := dirKey{base: base, theme: themeName, subdir: subdir}
+		entries := t.dirEntries(key)
+		if len(entries) == 0 {
+			continue
+		}
+		for _, file := range files {
+			if !entries[file] {
+				continue
+			}
+			path := filepath.Join(base, themeName, subdir, file)
 			if fileExists(path) {
 				return path
 			}
@@ -262,15 +306,44 @@ func (t *Theme) probe(themeName, subdir, name string) string {
 // lookupFallbackIcon implements LookupFallbackIcon: unthemed files sitting
 // directly in a base directory (for example /usr/share/pixmaps).
 func (t *Theme) lookupFallbackIcon(name string) string {
+	files := iconCandidates(name)
 	for _, base := range t.baseDirs {
-		for _, ext := range extensions {
-			path := filepath.Join(base, name+"."+ext)
+		entries := t.dirEntries(dirKey{base: base})
+		if len(entries) == 0 {
+			continue
+		}
+		for _, file := range files {
+			if !entries[file] {
+				continue
+			}
+			path := filepath.Join(base, file)
 			if fileExists(path) {
 				return path
 			}
 		}
 	}
 	return ""
+}
+
+// dirEntries returns the set of entry names in the directory named by key,
+// reading the directory at most once per Theme and caching the result (an empty
+// set for an absent or unreadable directory). The joined path string is built
+// only on that first read, so repeated probes of the same directory allocate
+// nothing. The caller holds the lock. Caching directory contents is consistent
+// with the memoisation Lookup already performs: a Theme assumes the on-disk
+// icon tree is stable for its lifetime.
+func (t *Theme) dirEntries(key dirKey) map[string]bool {
+	if set, ok := t.dirSets[key]; ok {
+		return set
+	}
+	set := map[string]bool{}
+	if ents, err := os.ReadDir(filepath.Join(key.base, key.theme, key.subdir)); err == nil {
+		for _, e := range ents {
+			set[e.Name()] = true
+		}
+	}
+	t.dirSets[key] = set
+	return set
 }
 
 // lookupGenericIcon implements the generic-icon fallback: repeatedly strip the
